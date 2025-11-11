@@ -1,5 +1,15 @@
+// pages/api/sync-activecampaign.js
+const { syncContacts } = require('../../lib/sync/contacts');
+const { syncDeals } = require('../../lib/sync/deals');
+const { storeSyncMetadata } = require('../../lib/db/sync-metadata');
+
+/**
+ * ActiveCampaign to Vercel Postgres Sync
+ * Runs via GitHub Actions every 15 minutes
+ * Fetches complete datasets for contacts and deals
+ */
 export default async function handler(req, res) {
-  // Add these debug logs at the very start
+  // Add debug logs at the very start
   console.log('[DEBUG] ===== Function Started =====');
   console.log('[DEBUG] Timestamp:', new Date().toISOString());
   console.log('[DEBUG] Method:', req.method);
@@ -8,7 +18,7 @@ export default async function handler(req, res) {
   console.log('[DEBUG] AC_API_URL configured:', !!process.env.AC_API_URL);
   console.log('[DEBUG] DATABASE_URL configured:', !!process.env.DATABASE_URL);
   
-  // Verify this is a legitimate cron request from Vercel
+  // Verify this is a legitimate cron request
   const authHeader = req.headers.authorization;
   
   if (process.env.NODE_ENV === 'production') {
@@ -26,6 +36,7 @@ export default async function handler(req, res) {
   console.log(`[${syncId}] Starting ActiveCampaign sync at ${new Date().toISOString()}`);
 
   try {
+    // Run both syncs in parallel for efficiency
     const [contactsResult, dealsResult] = await Promise.allSettled([
       syncContacts(syncId),
       syncDeals(syncId)
@@ -116,7 +127,7 @@ export default async function handler(req, res) {
   }
 }
 
-// Increase timeout for this API route (Vercel Pro allows up to 300s)
+// Increase timeout for this API route
 export const config = {
   maxDuration: 300, // 5 minutes max execution time
 };

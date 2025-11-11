@@ -1,6 +1,5 @@
 // pages/api/query-data.js
-import { neon } from '@neondatabase/serverless';
-const sql = neon(process.env.DATABASE_URL);
+const { neon } = require('@neondatabase/serverless');
 
 /**
  * Query synced ActiveCampaign data
@@ -22,6 +21,8 @@ export default async function handler(req, res) {
   }
 
   try {
+    const sql = neon(process.env.DATABASE_URL);
+    
     // Get the latest data
     const result = await sql`
       SELECT json_data, synced_at, record_count
@@ -31,16 +32,16 @@ export default async function handler(req, res) {
       LIMIT 1
     `;
 
-    if (result.rows.length === 0) {
+    if (result.length === 0) {
       return res.status(404).json({ 
         error: `No ${type} data found`,
         message: 'No sync has been completed yet'
       });
     }
 
-    let data = result.rows[0].json_data;
-    const syncedAt = result.rows[0].synced_at;
-    const totalRecords = result.rows[0].record_count;
+    let data = result[0].json_data;
+    const syncedAt = result[0].synced_at;
+    const totalRecords = result[0].record_count;
 
     // Apply search filter if provided
     if (search) {

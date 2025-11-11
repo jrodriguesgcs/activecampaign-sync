@@ -1,7 +1,6 @@
 // pages/api/sync-status.js
-import { getSyncHistory, getSyncStats } from '../../lib/db/sync-metadata';
-import { neon } from '@neondatabase/serverless';
-const sql = neon(process.env.DATABASE_URL);
+const { getSyncHistory, getSyncStats } = require('../../lib/db/sync-metadata');
+const { neon } = require('@neondatabase/serverless');
 
 /**
  * API endpoint to check sync status and history
@@ -53,6 +52,7 @@ export default async function handler(req, res) {
 
 async function getLatestDataInfo() {
   try {
+    const sql = neon(process.env.DATABASE_URL);
     const result = await sql`
       SELECT 
         data_type,
@@ -74,7 +74,7 @@ async function getLatestDataInfo() {
       deals: null
     };
 
-    result.rows.forEach(row => {
+    result.forEach(row => {
       info[row.data_type] = {
         lastSynced: row.synced_at,
         recordCount: row.record_count,
