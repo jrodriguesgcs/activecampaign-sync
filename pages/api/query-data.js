@@ -1,10 +1,12 @@
 // pages/api/query-data.js
 const { neon } = require('@neondatabase/serverless');
+const { promisify } = require('util');
+const { gunzip } = require('zlib');
+const gunzipAsync = promisify(gunzip);
 
 /**
  * Query synced ActiveCampaign data
- * GET /api/query-data?type=contacts&filter=...
- * GET /api/query-data?type=deals&filter=...
+ * GET /api/query-data?type=contacts&limit=100&offset=0&search=...
  */
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -23,13 +25,12 @@ export default async function handler(req, res) {
   try {
     const sql = neon(process.env.DATABASE_URL);
     
-    // Get the latest data
+    // Get all batches for this data type
     const result = await sql`
-      SELECT json_data, synced_at, record_count
+      SELECT json_data_compressed, synced_at, record_count
       FROM ac_sync_data
       WHERE data_type = ${type}
-      ORDER BY synced_at DESC
-      LIMIT 1
+      ORDER BY synced_at DESC, id ASC
     `;
 
     if (result.length === 0) {
@@ -39,21 +40,31 @@ export default async function handler(req, res) {
       });
     }
 
-    let data = result[0].json_data;
+    // Decompress and combine all batches
+    let allData = [];
     const syncedAt = result[0].synced_at;
-    const totalRecords = result[0].record_count;
+    let totalRecords = 0;
+
+    for (const row of result) {
+      if (row.json_data_compressed) {
+        const decompressed = await gunzipAsync(Buffer.from(row.json_data_compressed));
+        const batch = JSON.parse(decompressed.toString('utf8'));
+        allData.push(...batch);
+        totalRecords += row.record_count;
+      }
+    }
 
     // Apply search filter if provided
     if (search) {
       const searchLower = search.toLowerCase();
-      data = data.filter(item => {
+      allData = allData.filter(item => {
         const itemStr = JSON.stringify(item).toLowerCase();
         return itemStr.includes(searchLower);
       });
     }
 
     // Apply pagination
-    const paginatedData = data.slice(
+    const paginatedData = allData.slice(
       parseInt(offset), 
       parseInt(offset) + parseInt(limit)
     );
@@ -62,7 +73,7 @@ export default async function handler(req, res) {
       type,
       syncedAt,
       totalRecords,
-      filteredRecords: data.length,
+      filteredRecords: allData.length,
       returnedRecords: paginatedData.length,
       offset: parseInt(offset),
       limit: parseInt(limit),
