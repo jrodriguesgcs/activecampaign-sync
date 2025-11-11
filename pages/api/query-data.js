@@ -25,11 +25,10 @@ export default async function handler(req, res) {
   try {
     const sql = neon(process.env.DATABASE_URL);
     
-    // Get all batches from the latest sync
-    const result = await sql`
+    // First, get batch IDs only (not the actual data) to avoid memory issues
+    const batchInfo = await sql`
       SELECT 
         id,
-        json_data_compressed, 
         synced_at, 
         record_count,
         sync_id
@@ -38,7 +37,7 @@ export default async function handler(req, res) {
       ORDER BY synced_at DESC, id ASC
     `;
 
-    if (result.length === 0) {
+    if (batchInfo.length === 0) {
       return res.status(404).json({ 
         error: `No ${type} data found`,
         message: 'No sync has been completed yet'
@@ -46,27 +45,38 @@ export default async function handler(req, res) {
     }
 
     // Get the latest sync timestamp
-    const latestSyncTime = result[0].synced_at;
+    const latestSyncTime = batchInfo[0].synced_at;
     
-    // Filter to only get batches from the latest sync
-    const latestBatches = result.filter(row => {
-      const rowTime = new Date(row.synced_at).getTime();
-      const latestTime = new Date(latestSyncTime).getTime();
-      return rowTime === latestTime;
-    });
+    // Filter to only get batch IDs from the latest sync
+    const latestBatchIds = batchInfo
+      .filter(row => {
+        const rowTime = new Date(row.synced_at).getTime();
+        const latestTime = new Date(latestSyncTime).getTime();
+        return rowTime === latestTime;
+      })
+      .map(row => row.id);
 
-    console.log(`Found ${latestBatches.length} batches for latest ${type} sync`);
+    console.log(`Found ${latestBatchIds.length} batches for latest ${type} sync`);
 
-    // Decompress all batches and combine
+    // Now fetch and process batches ONE AT A TIME
     let allData = [];
     let successfulBatches = 0;
 
-    for (const row of latestBatches) {
+    for (const batchId of latestBatchIds) {
       try {
-        if (!row.json_data_compressed) {
-          console.warn(`Batch ${row.id} has no data`);
+        // Fetch ONE batch at a time
+        const batchRows = await sql`
+          SELECT json_data_compressed
+          FROM ac_sync_data
+          WHERE id = ${batchId}
+        `;
+
+        if (batchRows.length === 0 || !batchRows[0].json_data_compressed) {
+          console.warn(`Batch ${batchId} has no data`);
           continue;
         }
+
+        const row = batchRows[0];
 
         // Convert to Buffer
         const buffer = Buffer.isBuffer(row.json_data_compressed) 
@@ -83,29 +93,33 @@ export default async function handler(req, res) {
           batch = JSON.parse(decompressed.toString('utf8'));
         } else {
           // Handle uncompressed JSON (legacy data)
-          console.warn(`Batch ${row.id} is not gzipped, parsing as plain JSON`);
           batch = JSON.parse(buffer.toString('utf8'));
         }
         
         if (!Array.isArray(batch)) {
-          console.error(`Batch ${row.id} is not an array`);
+          console.error(`Batch ${batchId} is not an array`);
           continue;
         }
 
         allData = allData.concat(batch);
         successfulBatches++;
+
+        // Log progress every 10 batches
+        if (successfulBatches % 10 === 0) {
+          console.log(`Processed ${successfulBatches}/${latestBatchIds.length} batches...`);
+        }
         
       } catch (err) {
-        console.error(`Error processing batch ${row.id}:`, err.message);
+        console.error(`Error processing batch ${batchId}:`, err.message);
       }
     }
 
-    console.log(`Successfully processed ${successfulBatches}/${latestBatches.length} batches. Total records: ${allData.length}`);
+    console.log(`Successfully processed ${successfulBatches}/${latestBatchIds.length} batches. Total records: ${allData.length}`);
 
     if (allData.length === 0) {
       return res.status(500).json({
         error: 'No data could be retrieved',
-        message: `Failed to process all ${latestBatches.length} batches.`
+        message: `Failed to process all ${latestBatchIds.length} batches.`
       });
     }
 
@@ -122,7 +136,8 @@ export default async function handler(req, res) {
       returnedRecords: paginatedData.length,
       offset: parseInt(offset),
       limit: parseInt(limit),
-      batches: latestBatches.length,
+      batches: latestBatchIds.length,
+      successfulBatches,
       data: paginatedData
     });
 
@@ -134,3 +149,8 @@ export default async function handler(req, res) {
     });
   }
 }
+
+// Increase timeout for this API route since we're processing many batches
+export const config = {
+  maxDuration: 60, // 60 seconds max
+};
