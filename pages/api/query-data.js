@@ -1,8 +1,9 @@
 // pages/api/query-data.js
 const { neon } = require('@neondatabase/serverless');
+const zlib = require('zlib');
 const { promisify } = require('util');
-const { gunzip } = require('zlib');
-const gunzipAsync = promisify(gunzip);
+
+const gunzipAsync = promisify(zlib.gunzip);
 
 /**
  * Query synced ActiveCampaign data (limited batches)
@@ -24,13 +25,12 @@ export default async function handler(req, res) {
   try {
     const sql = neon(process.env.DATABASE_URL);
     
-    // Get just the first batch from the latest sync (enough for preview)
+    // Get all batches from the latest sync
     const result = await sql`
-      SELECT json_data_compressed, synced_at, record_count
+      SELECT json_data_compressed, synced_at, record_count, id
       FROM ac_sync_data
       WHERE data_type = ${type}
       ORDER BY synced_at DESC, id ASC
-      LIMIT 1
     `;
 
     if (result.length === 0) {
@@ -40,34 +40,50 @@ export default async function handler(req, res) {
       });
     }
 
-    // Get total count from all recent batches
-    const countResult = await sql`
-      SELECT SUM(record_count) as total
-      FROM ac_sync_data
-      WHERE data_type = ${type}
-      AND synced_at = ${result[0].synced_at}
-    `;
+    // Get the latest sync timestamp
+    const latestSyncTime = result[0].synced_at;
+    
+    // Filter to only get batches from the latest sync
+    const latestBatches = result.filter(row => 
+      row.synced_at.getTime() === latestSyncTime.getTime()
+    );
 
-    const totalRecords = parseInt(countResult[0]?.total || 0);
+    console.log(`Found ${latestBatches.length} batches for latest ${type} sync`);
 
-    // Decompress first batch
-    const decompressed = await gunzipAsync(Buffer.from(result[0].json_data_compressed));
-    const data = JSON.parse(decompressed.toString('utf8'));
+    // Decompress all batches and combine
+    let allData = [];
+    for (const row of latestBatches) {
+      try {
+        // The data is stored as a Buffer in Postgres
+        const buffer = Buffer.isBuffer(row.json_data_compressed) 
+          ? row.json_data_compressed 
+          : Buffer.from(row.json_data_compressed);
+        
+        const decompressed = await gunzipAsync(buffer);
+        const batch = JSON.parse(decompressed.toString('utf8'));
+        allData = allData.concat(batch);
+      } catch (err) {
+        console.error(`Error decompressing batch:`, err);
+        // Continue with other batches
+      }
+    }
+
+    console.log(`Total records decompressed: ${allData.length}`);
 
     // Apply pagination
-    const paginatedData = data.slice(
+    const paginatedData = allData.slice(
       parseInt(offset), 
-      Math.min(parseInt(offset) + parseInt(limit), data.length)
+      parseInt(offset) + parseInt(limit)
     );
 
     return res.status(200).json({
       type,
-      syncedAt: result[0].synced_at,
-      totalRecords,
+      syncedAt: latestSyncTime,
+      totalRecords: allData.length,
       returnedRecords: paginatedData.length,
       offset: parseInt(offset),
       limit: parseInt(limit),
-      note: "Showing data from first batch only (up to 10,000 records). Use SQL queries for full dataset.",
+      batches: latestBatches.length,
       data: paginatedData
     });
 
