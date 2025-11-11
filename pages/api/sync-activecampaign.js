@@ -1,22 +1,24 @@
-// pages/api/sync-activecampaign.js
-import { syncContacts } from '../../lib/sync/contacts';
-import { syncDeals } from '../../lib/sync/deals';
-import { storeSyncMetadata } from '../../lib/db/sync-metadata';
-
-/**
- * ActiveCampaign to Vercel Postgres Sync
- * Runs every 15 minutes via Vercel Cron
- * Fetches complete datasets for contacts and deals
- */
 export default async function handler(req, res) {
+  // Add these debug logs at the very start
+  console.log('[DEBUG] ===== Function Started =====');
+  console.log('[DEBUG] Timestamp:', new Date().toISOString());
+  console.log('[DEBUG] Method:', req.method);
+  console.log('[DEBUG] Auth header present:', !!req.headers.authorization);
+  console.log('[DEBUG] CRON_SECRET configured:', !!process.env.CRON_SECRET);
+  console.log('[DEBUG] AC_API_URL configured:', !!process.env.AC_API_URL);
+  console.log('[DEBUG] DATABASE_URL configured:', !!process.env.DATABASE_URL);
+  
   // Verify this is a legitimate cron request from Vercel
   const authHeader = req.headers.authorization;
   
   if (process.env.NODE_ENV === 'production') {
     if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+      console.log('[DEBUG] Auth FAILED - unauthorized');
       return res.status(401).json({ error: 'Unauthorized' });
     }
   }
+  
+  console.log('[DEBUG] Auth PASSED - starting sync');
 
   const syncStartTime = Date.now();
   const syncId = `sync-${syncStartTime}`;
@@ -24,7 +26,6 @@ export default async function handler(req, res) {
   console.log(`[${syncId}] Starting ActiveCampaign sync at ${new Date().toISOString()}`);
 
   try {
-    // Run both syncs in parallel for efficiency
     const [contactsResult, dealsResult] = await Promise.allSettled([
       syncContacts(syncId),
       syncDeals(syncId)
